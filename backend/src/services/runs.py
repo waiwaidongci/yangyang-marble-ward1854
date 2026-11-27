@@ -7,6 +7,7 @@ from src.constants.workflow import Decision, Role, RunStatus
 from src.domain.project import SPEC
 from src.models.review import Review
 from src.models.run import Run
+from src.services import reinspections
 from src.services.audit import record
 from src.services.catalog import get_dataset
 from src.services.queue import notify_worker
@@ -64,6 +65,12 @@ def export_table(session, run_id, key, actor):
     run, review = get_run(session, run_id, actor)
     if review is None or review.decision != Decision.APPROVED:
         raise HTTPException(409, '复核通过后可下载正式 CSV')
+    if key in reinspections.TONE_TABLE_KEYS:
+        # 加运行行锁读取已提交的最新区间快照，整份导出与补录复检互斥、同属一个生效区间。
+        _, _, effective = reinspections.effective_snapshot(session, run_id)
+        if key not in effective:
+            raise LookupError('找不到结果表')
+        return effective[key]
     for table in run.result['tables']:
         if table['key'] == key:
             return table

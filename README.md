@@ -36,9 +36,11 @@ docker compose up -d --no-build --wait
 | 导入台账 | `POST /api/datasets` | JSON 包含 `name` 和 `csv`，其中 `csv` 是完整 CSV 文本 |
 | 找到台账 | `GET /api/datasets` | 返回台账编号、名称、行数和校验和 |
 | 提交运行 | `POST /api/runs` | 传 `label`、`dataset_id` 和 `settings`，空对象使用默认门槛，返回 HTTP 202 和运行编号 |
-| 查看结果 | `GET /api/runs/{id}` | 等待 `status` 为 `completed`，查看 `result.tables`，`failed` 时查看 `error` |
+| 查看结果 | `GET /api/runs/{id}` | 等待 `status` 为 `completed`，查看 `result.tables`、当前生效区间 `effective_tone_interval` 与复检历史，`failed` 时查看 `error` |
 | 签核 | `POST /api/runs/{id}/review` | 管理员提交 `{"decision":"approved","note":"已核对套件与搁置清单"}`，每次完成运行可签核一次 |
-| 下载正式 CSV | `GET /api/runs/{id}/export/{key}` | 签核通过后按表键下载 |
+| 补录色卡复检 | `POST /api/runs/{id}/reinspections` | 签核后管理员提交放宽后的 `tone_deviation_min`、`tone_deviation_max` 与 `note`，追加一条区间版本快照 |
+| 复检历史 | `GET /api/runs/{id}/reinspections` | 按版本号列出全部区间放宽记录，原签核与历史区间均可追溯 |
+| 下载正式 CSV | `GET /api/runs/{id}/export/{key}` | 签核通过后按表键下载；偏差相关表始终取当前生效区间的快照 |
 
 | 表键 | 用途 |
 |---|---|
@@ -47,8 +49,12 @@ docker compose up -d --no-build --wait
 | `ward_merges` | 完整合并顺序、左右节点、各步 Ward 距离与 SSE 增量 |
 | `scaling` | 历史标尺参数及留出批均值偏移 |
 | `set_aside` | 尺寸不足的单件、原始尺寸与搁置原因 |
+| `tone_intervals` | 当前生效明度偏差上下限、入树批次与偏差网格场景数 |
+| `robust_kit_members` | 全偏差区间成员始终相同且达标的可交接套件逐件明细 |
+| `removed_kit_witnesses` | 被撤下套件的逐件成员与首个失败偏差场景作证 |
+| `deviation_scenarios` | 偏差网格每个场景的建议切法、可交接组数与件数 |
 
-例如，签核后用查阅员的令牌和运行编号下载成员表。按 `clusters` 筛选已复核的候选，再用 `kit_status` 和 `group_id` 分装。
+例如，签核后用查阅员的令牌和运行编号下载成员表。偏差相关下载按 `robust_kit_id` 分装，整份 CSV 对应同一个已生效区间；补录复检放宽区间后再次下载，只会得到新区间里仍能原样交接的套件，撤下套件见 `removed_kit_witnesses`。
 
 ```bash
 curl --fail-with-body -sS \
@@ -59,13 +65,12 @@ curl --fail-with-body -sS \
 
 ## 本地开发
 
-领域接口位于 `backend/src/domain/project.py`。`records.py` 校验台账和尺寸，`scaling.py` 冻结历史标尺，`ward.py` 建树，`cuts.py` 比选切树和套件，`reports.py` 生成导出。角色、运行状态、复核决定分别由 `Role`、`RunStatus`、`Decision` 定义于 `backend/src/constants/workflow.py`，用于鉴权、运行详情及签核。台账用途 `train`、`holdout`、`pending` 定义于领域 `settings.py`，由导入校验和计算入口共用。
+领域接口位于 `backend/src/domain/project.py`。`records.py` 校验台账和尺寸，`scaling.py` 冻结历史标尺，`ward.py` 建树，`cuts.py` 比选切树和套件，`robustness.py` 在同批明度偏差网格上逐场景重建并认证稳健套件，`reports.py` 生成导出。角色、运行状态、复核决定分别由 `Role`、`RunStatus`、`Decision` 定义于 `backend/src/constants/workflow.py`，用于鉴权、运行详情及签核。台账用途 `train`、`holdout`、`pending` 定义于领域 `settings.py`，由导入校验和计算入口共用。复检区间版本由 `models/reinspection.py` 持久化，放宽校验与并发快照在 `services/reinspections.py`。
 
-在 `backend/` 安装 `requirements.txt` 并配置数据库、Redis 和令牌密钥后，可分别运行 `python -m uvicorn src.main:app --port 19437` 和 `python -m src.worker`。只验证算法时，从批次根目录执行以下命令。oracle 只依赖 Python 标准库与本项目领域模块。
+在 `backend/` 安装 `requirements.txt` 并配置数据库、Redis 和令牌密钥后，可分别运行 `python -m uvicorn src.main:app --port 19437` 和 `python -m src.worker`。只验证算法时，从 `backend/` 目录执行以下命令。oracle 只依赖 Python 标准库与本项目领域模块。
 
 ```bash
-PYTHONPATH=projects/yangyang-marble-ward/backend \
-  python3 test-artifacts/yangyang-marble-ward/tests/oracle.py
+PYTHONPATH=. python3 ../test-artifacts/yangyang-marble-ward/tests/oracle.py
 ```
 
 [CSV 示例、Ward 合并代价与交班剧本](BUSINESS.md)
